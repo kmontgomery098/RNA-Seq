@@ -1,0 +1,85 @@
+---
+title: "DE Testing"
+output: html_document
+---
+
+RNASeq data follows a negative binomial model as data presents overdispersion. NB is a two parameter distribution; mean and dispersion.
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE,messages=FALSE, root.dir="/Volumes/Seagate/RNA/DE/GenomicAlignments/I_IP/arc/f")
+list.files()
+fp<-read.csv("I_IP_arc_f.csv")  
+filenames<-file.path(fp$path, paste0(fp$ids,".bam"))
+file.exists(filenames)
+```
+Define Gene Model
+===============
+```{r bam, include=FALSE}
+library("Rsamtools")
+bamfiles<-BamFileList(filenames,yieldSize = 2000000)
+cc<-seqinfo(bamfiles[1]) #use seqinfo() to confirm chromosome names match exonsBy() file
+```
+
+```{r GM, include=FALSE}
+#biocLite("GenomicFeatures")
+library("GenomicFeatures")
+gtffile<-file.path("/Volumes/Seagate/RNA/kiss/annotate", "Mus_musculus.GRCm38.84.gtf")
+txdb<-makeTxDbFromGFF(gtffile,format="gtf",circ_seqs=character())
+```
+
+```{r GRangesList, include=FALSE}
+ebtx<-exonsBy(txdb,'tx',use.names=TRUE)
+ebg<-exonsBy(txdb,'gene')
+```
+
+```{r parallel_computing, include=FALSE}
+library("BiocParallel")
+#register(MulticoreParam(workers = 2))
+register(BPPARAM=SnowParam(2))
+```
+
+Read Counting
+============
+summarizeOverlaps will produce read counts contained in a Summarized Experiment object. These objects are saved for downstream analysis.  
+
+```{r models}
+library("GenomicAlignments")
+system.time(gmodel<-summarizeOverlaps(features=ebg,reads=bamfiles,
+                                      mode="IntersectionNotEmpty",
+                                      singleEnd=TRUE,
+                                      ignore.strand=TRUE,
+                                      BPPARAM=SnowParam()))
+system.time(tmodel<-summarizeOverlaps(features=ebtx,reads=bamfiles, 
+                                      mode="IntersectionNotEmpty",
+                                      singleEnd=TRUE,
+                                      ignore.strand=TRUE,
+                                      BPPARAM=SnowParam()))
+save(gmodel,file="gmodel.Rdata")
+save(tmodel,file="tmodel.Rdata")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

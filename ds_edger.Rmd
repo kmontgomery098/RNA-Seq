@@ -1,0 +1,456 @@
+---
+title: "ds_edger"
+output: html_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message=FALSE,
+                      warning=FALSE,
+                      root.dir="/Volumes/Seagate/RNA/DE/GenomicAlignments/I_IP/arc/f")
+#list.files()
+fp<-read.csv("I_IP_arc_f.csv")  
+filenames<-file.path(fp$path, paste0(fp$ids,".bam"))
+file.exists(filenames)
+```
+
+```{r load counts}
+library("GenomicAlignments")
+load("gmodel.Rdata")
+load("tmodel.Rdata")
+counts<-assay(gmodel)
+counts.t<-assay(tmodel)
+```
+
+```{r phenotype_info}
+fp<-read.csv("I_IP_arc_f.csv",row.names=1)
+#row.names=1 must be included when the csv is read with phenotypic information
+#se$type %<>% relevel("i") can relevel factors like so
+colData(gmodel)<-DataFrame(fp)
+output<-read.table(file="GC_lengths.tsv")
+fp
+```
+
+Control 
+======
+Check kiss raw counts; 1 gene, 5 known isoforms. 
+
+```{r kiss.model}
+counts.k<-counts
+counts.kt<-counts.t
+```
+
+```{r kiss}
+counts.k[grep("ENSMUSG00000102367",rownames(counts.k)),]
+counts.k[grep("ENSMUSG00000035773",rownames(counts.k)),]#Kiss1r
+
+counts.kt[grep("ENSMUST00000007433",rownames(counts.kt)),]
+counts.kt[grep("ENSMUST00000195286",rownames(counts.kt)),]
+counts.kt[grep("ENSMUST00000193888",rownames(counts.kt)),]
+counts.kt[grep("ENSMUST00000194044",rownames(counts.kt)),]
+counts.kt[grep("ENSMUST00000178033",rownames(counts.kt)),]
+counts.kt[grep("ENSMUST00000045529",rownames(counts.kt)),]#Kiss1r transcript
+counts.kt[grep("ENSMUST00000219745",rownames(counts.kt)),]#Kiss1r transcript
+counts.kt[grep("ENSMUST00000219883",rownames(counts.kt)),]#Kiss1r transcript
+```
+
+
+```{r control}
+counts[grep("ENSMUSG00000029580",rownames(counts)),] #actb
+counts[grep("ENSMUSG00000057666",rownames(counts)),] #gapdh
+```
+
+Annotation Prep
+=============
+```{r annot_prep}
+library(org.Mm.eg.db)
+```
+
+Filter
+===========
+
+Two filtering methods were tested; filterCounts() (of tweeDEseq package) which kept genes expressed at a level of 0.5 counts per million or greater in at least two samples as well as my own conservative subsetting. For example, with the input vs. ip comparison, genes were removed if there were more than two 0 counts out of four samples. EdgeR employes a filtering method that is less conservative than those two above, keeping genes that are expressed a level of 1 cpm (6-7 counts per sample) in two or more libraries. filterCounts() proved sufficient for filtering lowly expressed genes.
+```{r filter}
+library(tweeDEseq)
+counts.f<-filterCounts(counts) 
+counts.f.conserv<-counts[apply(counts==0,1,sum)<=2,]
+
+#adjust annotation file 
+i<-intersect(rownames(output),rownames(counts.f))
+output.f<-output[rownames(output) %in% i,]
+i<-intersect(rownames(output),rownames(counts.f.conserv))
+output.f.conserv<-output[rownames(output) %in% i,]
+```
+
+
+Exploratory analysis can require data to have the same range of variance at different ranges of the mean values. 
+
+Data Exploration 
+=========
+Check raw data
+
+```{r raw}
+library(edgeR)
+library(ggplot2)
+#raw Data
+maPlot(counts[,1], counts[,3], pch=19, cex=0.5, ylim=c(-8,8), 
+       allCol="darkgray", lowess=TRUE, xlab=expression(A==log[2](sqrt(Sample1 %.% Sample2))),
+       ylab=expression(M==log[2](Sample1)-log[2](Sample2)))
+grid(col="black")
+maPlot(counts[,2], counts[,4], pch=19, cex=0.5, ylim=c(-8,8), 
+       allCol="darkgray", lowess=TRUE, xlab=expression(A==log[2](sqrt(Sample1 %.% Sample2))),
+       ylab=expression(M==log[2](Sample1)-log[2](Sample2)))
+grid(col="black")
+#box plots of filtered data 
+counts.gg<-as.data.frame(counts.f)
+ggplot(stack(counts.gg),aes(x=ind,y=values))+
+        geom_boxplot()+coord_cartesian(ylim=c(0,1000))+
+        theme(axis.text.x = element_text(angle=90,vjust=0.5, size=16))+
+        ggtitle("")
+```
+
+
+Normalization
+==================
+Explore skewdness. Skewdness and kurtosis are two types of departures from normality (Sokal,1995)
+
+```{r skewdness}
+library(psych)
+describe(counts.f)
+```
+
+```{r distribution}
+RPKM<-function(counts,output){
+        library(psych)
+        library(ggplot2)
+        library(reshape)
+        width<-output$Length
+        #normalization calculations
+        library(ggplot2)
+        NormByRPKM<-t(t(counts/width*1000)/colSums(counts)*1e6)
+        NormByRPKM<-as.data.frame(NormByRPKM)
+        ggplot(stack(NormByRPKM),aes(x=ind,y=values))+
+                geom_boxplot()+
+                coord_cartesian(ylim=c(0,20))+
+                theme(axis.text.x = element_text(angle=90,vjust=0.5, size=16))+
+                ggtitle("RPKM Normalization")
+}
+
+
+RPKM(counts.f,output.f)
+```
+
+
+```{r}
+library(tweeDEseq)
+counts.tmm<-normalizeCounts(counts.f,method="TMM")
+```
+
+```{r cqn}
+library(cqn)
+annotation<-output.f[,c("Length","GC")]
+counts.cqn<-normalizeCounts(counts.f,method="cqn",annot=annotation)
+```
+
+Below adapted from Juan Gonzalez lecture
+
+Hypothesis Testing- Only a fraction of genes are expressed in a given tissue or cellular state. Most genes should not be differentially expressed. 
+
+Replicate 1
+===========
+```{r logratio1}
+log.ratio1<-function(counts,output){
+        width<-output$Length
+        NormByRPKM<-t(t(counts/width*1000)/colSums(counts)*1e6)
+        lib.size<-colSums(counts)
+        NormByTotalNrReads<-sweep(counts,2,FUN="/",lib.size)
+        MbyT<-log2(NormByTotalNrReads[,1]/NormByTotalNrReads[,3])
+        MbyRPKM<-log2(NormByRPKM[,1]/NormByRPKM[,3])
+        Counts<-log2(counts[,1]/counts[,3])
+        library(tweeDEseq)
+        counts.tmm<-normalizeCounts(counts,method="TMM")
+        TMM<-log2(abs(counts.tmm[,1]/counts.tmm[,3]))
+        library(cqn)
+        annotation<-output[,c("Length","GC")]
+        counts.cqn<-normalizeCounts(counts.f,method="cqn",annot=annotation)
+        CQN<-log2(abs(counts.cqn[,1]/counts.cqn[,3]))
+        #graph
+        par(mfrow=c(2,3))
+        hist(Counts,xlab="log2-ratio")
+        abline(v=0,col="red")
+        hist(MbyT,xlab="log2-ratio",main="Histogram of Normalization \nby Total Reads")
+        abline(v=0,col="red")
+        hist(MbyRPKM,xlab="log2-ratio")
+        abline(v=0,col="red")
+        hist(TMM,xlab="log2-ratio")
+        abline(v=0,col="red")
+        hist(CQN,xlab="log2-ratio")
+        abline(v=0,col="red")
+}
+
+log.ratio1(counts.f,output.f)
+```
+
+Replicate 2
+=============
+```{r logratio2}
+log.ratio2<-function(counts,output){
+        width<-output$Length
+        NormByRPKM<-t(t(counts/width*1000)/colSums(counts)*1e6)
+        lib.size<-colSums(counts)
+        NormByTotalNrReads<-sweep(counts,2,FUN="/",lib.size)
+        MbyT<-log2(NormByTotalNrReads[,2]/NormByTotalNrReads[,4])
+        RPKM<-log2(NormByRPKM[,2]/NormByRPKM[,4])
+        Counts<-log2(counts[,2]/counts[,4])
+        library(tweeDEseq)
+        counts.tmm<-normalizeCounts(counts,method="TMM")
+        TMM<-log2(abs(counts.tmm[,2]/counts.tmm[,4]))
+        library(cqn)
+        annotation<-output[,c("Length","GC")]
+        counts.cqn<-normalizeCounts(counts.f,method="cqn",annot=annotation)
+        CQN<-log2(abs(counts.cqn[,2]/counts.cqn[,4]))
+
+        #graph
+        par(mfrow=c(2,3))
+        hist(Counts,xlab="log2-ratio")
+        abline(v=0,col="red")
+        hist(MbyT,xlab="log2-ratio", main="Histogram of Normalization \nby Total Reads")
+        abline(v=0,col="red")
+        hist(RPKM,xlab="log2-ratio")
+        abline(v=0,col="red")
+        hist(TMM,xlab="log2-ratio")
+        abline(v=0,col="red")
+        hist(CQN,xlab="log2-ratio")
+        abline(v=0,col="red")
+}
+
+log.ratio2(counts.f,output.f)
+```
+
+
+
+```{r}
+library(edgeR)
+#Replicate1
+maPlot(counts.tmm[,1], counts.tmm[,3], pch=19, cex=0.5, ylim=c(-8,8), 
+       allCol="darkgray", lowess=TRUE, xlab=expression(A==log[2](sqrt(Sample1 %.% Sample2))),
+       ylab=expression(M==log[2](Sample1)-log[2](Sample2)), main=c("Replicate 1 TMM Normalization"))
+grid(col="black")
+maPlot(counts.tmm[,2], counts.tmm[,4], pch=19, cex=0.5, ylim=c(-8,8), 
+       allCol="darkgray", lowess=TRUE, xlab=expression(A==log[2](sqrt(Sample1 %.% Sample2))),
+       ylab=expression(M==log[2](Sample1)-log[2](Sample2)),main=c("Replicate 2 TMM Normalization"))
+grid(col="black")
+maPlot(counts.cqn[,1], counts.cqn[,3], pch=19, cex=0.5, ylim=c(-8,8),
+        allCol="darkgray", lowess=TRUE, xlab=expression(A==log[2](sqrt(Sample1 %.% Sample2))),
+       ylab=expression(M==log[2](Sample1)-log[2](Sample2)), main=c("Replicate 1 CQN Normalization"))
+grid(col="black")
+#Replicate2
+maPlot(counts.cqn[,2], counts.cqn[,4], pch=19, cex=0.5, ylim=c(-8,8),
+        allCol="darkgray", lowess=TRUE, xlab=expression(A==log[2](sqrt(Sample1 %.% Sample2))),
+       ylab=expression(M==log[2](Sample1)-log[2](Sample2)), main=c("Replicate 2 CQN Normalization"))
+grid(col="black")
+```
+
+
+```{r boxplot with normalization}
+counts.tmm.b<-as.data.frame(counts.tmm)
+ggplot(stack(counts.tmm.b),aes(x=ind,y=values))+
+        geom_boxplot()+
+        coord_cartesian(ylim=c(0,1000))+
+        theme(axis.text.x = element_text(angle=90,vjust=0.5, size=16))+
+        ggtitle("Distribution with TMM Normalization")
+counts.cqn.b<-as.data.frame(counts.cqn)
+ggplot(stack(counts.cqn.b),aes(x=ind,y=values))+
+        geom_boxplot()+coord_cartesian(ylim=c(0,2000))+
+        theme(axis.text.x = element_text(angle=90,vjust=0.5, size=16))+
+        ggtitle("Distribution with CQN Normalization")
+```
+
+EdgeRpipe will take filtered count data as input. 
+
+EdgeR must normalize data internally. The pipe uses TMM normalization. TMM normalization is applied to this dataset to account for compositional difference between the libraries. EdgeR exactTest() creates pseudocounts which are quantile-quantile normalized counts.
+
+Format Output
+```{r}
+format.cust<-function(DF){
+        DF$logFC<-as.numeric(lapply(DF$logFC,round,2))
+        DF$logCPM<-as.numeric(lapply(DF$logCPM,round,2))
+        DF$unshrunk.logFC<-as.numeric(lapply(DF$unshrunk.logFC,formatC,digits=2,format="e"))
+        DF$PValue<-as.numeric(lapply(DF$PValue,formatC,digits=2,format="e"))
+        as.data.frame(DF)
+}
+```
+
+
+
+
+EDGER PIPE 
+=========
+Exact test is only applicable on datasets with a single factor. This method is functional for comparing cell type only within gender to see DE.
+```{r edgeR_exactTest}
+edger.pipe<-function(counts){
+        d<-DGEList(counts=counts,group=as.factor(fp$type),genes=rownames(counts))
+        ################################
+        #Add annotations
+        #get entrez ids that are mapped to ensembl id
+        entrez_id<-org.Mm.egENSEMBL2EG
+        mapped_entrez<-mappedkeys(entrez_id)
+        ensemblentrez_list<-as.list(entrez_id[mapped_entrez])
+        m<-match(d$genes$genes,names(ensemblentrez_list))
+        d$genes$Entrez<-ensemblentrez_list[m]
+
+        #get symbol that are mapped to enterz gene id 
+        sym<-org.Mm.egSYMBOL
+        mapped_symbol<-mappedkeys(sym)
+        entrezsymbol_list<-as.list(sym[mapped_symbol])
+        m2<-match(d$genes$Entrez,names(entrezsymbol_list))
+        d$genes$Symbol<-entrezsymbol_list[m2]
+        ##########################################
+        d<-estimateCommonDisp(d)
+        d$common.dispersion
+        d<-estimateTagwiseDisp(d)
+        d<-calcNormFactors(d)
+        resEdgeR.common<-exactTest(d,pair=c("i","p"),dispersion = "common") 
+        resEdgeR.tagwise<-exactTest(d,pair=c("i","p"),dispersion = "tagwise")
+        t<-topTags(resEdgeR.common,p.value=0.05)
+        topTags(resEdgeR.tagwise)
+}
+```
+
+Replicates are not treated as factors unless accounting for batch effects. I don't see a batch effect when I test the data.
+
+Cell-type specific DE linear models
+=========
+```{r edgeRlinear_model}
+library(dplyr)
+d_lin<-DGEList(counts=counts.f,group=as.factor(fp$type),genes=rownames(counts.f))
+d_lin$samples$group <- relevel(d_lin$samples$group, ref="i")
+################################
+#Add annotations
+#get entrez ids that are mapped to ensembl id
+entrez_id<-org.Mm.egENSEMBL2EG
+mapped_entrez<-mappedkeys(entrez_id)
+ensemblentrez_list<-as.list(entrez_id[mapped_entrez])
+m<-match(d_lin$genes$genes,names(ensemblentrez_list))
+d_lin$genes$ENTREZID<-ensemblentrez_list[m]
+
+#get symbol that are mapped to enterz gene id 
+sym<-org.Mm.egSYMBOL
+mapped_symbol<-mappedkeys(sym)
+entrezsymbol_list<-as.list(sym[mapped_symbol])
+m2<-match(d_lin$genes$ENTREZID,names(entrezsymbol_list))
+d_lin$genes$SYMBOL<-entrezsymbol_list[m2]
+##########################################
+celltype<-factor(fp$type)
+batch<-factor(fp$batch)
+design<-model.matrix(~0+celltype)
+rownames(design)<-colnames(d_lin)
+d_lin<-calcNormFactors(d_lin,method="TMM")
+d_lin<-estimateDisp(d_lin,design,robust=TRUE) #no effect on downstream analysis but identifies genes that are outliers for mean disperion trend
+fit<-glmFit(d_lin,design)
+lrt<-glmLRT(fit,contrast=c(-1,1))
+#or p to i comparison can be made with makeContrasts()
+#lrt<-glmLRT(fit,contrast=pvsi)
+top<-topTags(lrt,n=Inf)
+
+#explore dispersion
+plotBCV(d_lin)
+
+#explore cpm()
+library(formattable)
+o<-order(lrt$table$PValue)
+c<-cpm(d_lin)[o[1:10],]
+formattable(c,5)
+
+#MDS plot to show consistency between replicates
+plotMDS(d_lin)
+#legend("topleft",legend=c("i","p"),col=c(3,4),pch=15)
+#correlation
+cor(counts.f, method="spearman")
+cor(counts.f, method="pearson")
+
+#smear Plot, with TMM Normalization
+thresh<-0.001
+lfc<-2
+top_ids<-top$table[top$table$FDR<thresh & abs(top$table$logFC)>=lfc,1]
+top_ids_complete<-top$table[top$table$FDR<thresh & abs(top$table$logFC)>=lfc,]
+top_ids_symbol<-top$table[top$table$FDR<thresh & abs(top$table$logFC)>=lfc,3]
+plotSmear(lrt,de.tags=top_ids,pch=20,cex=0.6,main="Input v IP")
+abline(h=c(-1,0,1),col=c("dodgerblue","yellow","dodgerblue"),lty=2)
+
+#genes to file, must unlist symbol names 
+o<-top_ids_complete[order(top_ids_complete$logFC),]
+sym<-o$SYMBOL
+sym[sapply(sym, is.null)] <- NA
+sym.n<-unlist(sym)
+sub<-o[,c(1,4,8)]
+sub<-cbind(sub,sym.n)
+
+#up-regulated genes
+top_norm<-top
+thresh<-0.05
+up_norm<-top_norm$table[which(top_norm$table$logFC>0 & top_norm$table$FDR<thresh),]
+up_ids_norm<-up_norm$genes
+o_up<-up_norm[order(up_norm$logFC),]
+sym_up<-o_up$SYMBOL
+sym_up[sapply(sym_up, is.null)] <- NA
+symbol.unlist<-unlist(sym_up)
+sub_up<-o_up[,c(1,4,8)]
+sub_up<-cbind(sub_up,symbol.unlist)
+
+#plotMD(cpm(d_lin, log=TRUE), column=1)
+#abline(h=0, col="red", lty=2, lwd=2)
+```
+
+glmTreat() a method to focus on biologically meaningful genes
+```{r glm_treat}
+pvsi<-makeContrasts(celltypep-celltypei,levels=design)
+treat<-glmTreat(fit,con=pvsi,lfc=log2(1.1))
+top_treat<-topTags(treat,n=50)
+list<-decideTestsDGE(treat)
+summary(decideTestsDGE(treat)) #1525 genes differentially expressed 
+up_indx<-which(list[,1] ==1)#extract significant genes with positive fold change
+up_tt<-treat$table[up_indx,]
+up_genes<-treat$genes[up_indx,]
+up_tt<-cbind(up_tt,up_genes)
+sort<-up_tt[order(up_tt$logFC),]
+#must unlist to print gene names
+sym<-sort$SYMBOL
+sym[sapply(sym, is.null)] <- NA
+symbol.unlist<-unlist(sym)
+print.genes<-as.data.frame(symbol.unlist)
+```
+
+Annotation & Functional Enrichment
+==================================
+Top 50 gene ontology terms and up regulated pathways only.  
+
+```{r}
+go<-goana(treat,species="Mm",geneid=treat$genes$ENTREZID)
+ont<-topGO(go,n=50)
+ont_up<-topGO(go,sort="up")
+```
+
+```{r}
+sort.print<-sort[,c(1,2,3,4,7)]
+sort.f<-format.cust(sort.print)
+```
+
+
+Export
+=======
+```{r}
+max.print <- getOption('max.print')
+options(max.print=nrow(sort.f) * ncol(sort.f))
+cat(capture.output(sort.f), file = 'arc_f_glmtreat.txt', sep = '\n')
+cat(capture.output(print.genes), file = 'arc_f_genes_glmtreat.txt', sep = '\n')
+cat(capture.output(ont),file='ontology_f_arc.txt',sep='\n')
+cat(capture.output(ont_up),file='ontology_f_arc_up.txt',sep='\n')
+```
+
+Output (below) is sorted by FC, FDR value of 0.001 and Log Fold Change of 2.  
+```{r write table}
+interest="f_ipvi.tsv"
+write.table(sub, interest, sep="\t", quote=FALSE)
+```
+
