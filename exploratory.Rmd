@@ -1,7 +1,8 @@
 ---
-title: "ds_edger"
+title: "exploratory"
 output: html_document
 ---
+Associated phenotype data loaded. 
 
 ```{r setup}
 knitr::opts_chunk$set(echo = TRUE, 
@@ -14,6 +15,7 @@ filenames<-file.path(fp$path, paste0(fp$ids,".bam"))
 file.exists(filenames)
 ```
 
+Read counts compiled with summarizeOverlaps and gene models built from both transcript and gene counts.
 ```{r load counts}
 library("GenomicAlignments")
 load("gmodel.Rdata")
@@ -70,6 +72,7 @@ Filter
 ===========
 
 Two filtering methods were tested; filterCounts() (of tweeDEseq package) which kept genes expressed at a level of 0.5 counts per million or greater in at least two samples as well as my own conservative subsetting. For example, with the input vs. ip comparison, genes were removed if there were more than two 0 counts out of four samples. EdgeR employes a filtering method that is less conservative than those two above, keeping genes that are expressed a level of 1 cpm (6-7 counts per sample) in two or more libraries. filterCounts() proved sufficient for filtering lowly expressed genes.
+
 ```{r filter}
 library(tweeDEseq)
 counts.f<-filterCounts(counts) 
@@ -152,7 +155,7 @@ annotation<-output.f[,c("Length","GC")]
 counts.cqn<-normalizeCounts(counts.f,method="cqn",annot=annotation)
 ```
 
-Below adapted from Juan Gonzalez lecture
+Below adapted from Juan Gonzalez.
 
 Hypothesis Testing- Only a fraction of genes are expressed in a given tissue or cellular state. Most genes should not be differentially expressed. 
 
@@ -280,7 +283,6 @@ format.cust<-function(DF){
         as.data.frame(DF)
 }
 ```
-
 
 
 

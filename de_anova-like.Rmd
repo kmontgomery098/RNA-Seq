@@ -1,0 +1,416 @@
+---
+title: "ANOVA"
+output: html_document
+---
+
+a one-way analysis of variance for each gene
+
+anova-like 1 - ip only; avpv vs. arc of intact males
+anova-like 2 - ip only; avpv male vs. avpv female
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message=FALSE, 
+                      root.dir="/Volumes/Seagate/RNA/DE/GenomicAlignments/Anova",
+                      digits=3)
+library(ggplot2)
+library(org.Mm.eg.db)
+```
+
+All samples from summarizeOverlaps appended to one dataset. 
+```{r uploadfile}
+myfiles<-list.files(pattern=".Rdata")
+vec<-c()
+matrix<-matrix(nrow=47729,ncol=24)
+for (i in 1:length(myfiles)){
+        l<-paste("G",i,sep="")
+        load(myfiles[i])
+        assign(l,gmodel)
+        vec[i]<-l
+}
+#order respectively of all.csv list (G2,G3,G4,G5,G6,G1)
+mass<-cbind(G2,G3,G4,G5,G6,G1)
+anova1<-cbind(G6,G1)
+anova2<-cbind(G2,G1)
+anova3<-cbind(G6,G1)
+```
+
+```{r phenotype_info}
+library("GenomicAlignments")
+m<-read.csv("all.csv",row.names=1)
+#row.names=1 must be included when the csv is read with phenotypic information
+#se$type %<>% relevel("i") can relevel factors like so
+a1<-read.csv("anova1.csv",row.names=2)
+a2<-read.csv("anova2.csv",row.names=2)
+a3<-read.csv("anova3.csv",row.names=1)
+```
+
+
+Check Normalization of All Samples 
+=========================
+```{r filter}
+library(tweeDEseq)
+counts<-assay(mass)
+counts.f<-filterCounts(counts)
+counts.tmm<-normalizeCounts(counts.f,method="TMM")
+```
+
+```{r graph}
+counts.tmm.b<-as.data.frame(counts.tmm)
+ggplot(stack(counts.tmm.b),aes(x=ind,y=values))+
+        geom_boxplot()+
+        coord_cartesian(ylim=c(0,1000))+
+        theme(axis.text.x = element_text(angle=90,vjust=0.5, size=16))+
+        ggtitle("Distribution with TMM Normalization")
+```
+
+PCA Plot of All Samples 
+=============
+```{r pca_all}
+#group by type etc.
+group<-factor(paste0(m$gender,".",m$region,".",m$type))
+d_all<-DGEList(counts=counts.f,group=group,genes=rownames(counts.f))
+
+points<-rep(c(21,24),6)#for input vs ip
+colors<-rep(c("orangered1","orangered1","deepskyblue4","deepskyblue4"),3) #for brain region
+colors.bg<-rep(c("grey45"),4) #for sex 
+colors.bg<-append(rep(c("grey92"),4),colors.bg)
+colors.bg<-append(rep(c("white"),4),colors.bg)
+plotMDS(d_all,pch=points[group],col=colors[group],bg=colors.bg[group],cex=2,method="bcv")
+legend("bottomleft",legend=levels(group),pch=points,col=colors,pt.bg=colors.bg,ncol=3)
+title(main="Multidimensional Scaling of All Samples in 2D")
+
+#HOW TO PLOT MORE DIMENSIONS
+
+#Other PCA option library(ggplot2)
+#ggplot(counts.f, aes(x=PC1, y=PC2, color=Karyotype, shape=Sex, #group=Sex))+geom_point(size=5)+stat_ellipse()
+```
+
+
+
+```{r}
+format.cust<-function(DF){
+        DF$logFC<-as.numeric(lapply(DF$logFC,round,2))
+        DF$logCPM<-as.numeric(lapply(DF$logCPM,round,2))
+        DF$unshrunk.logFC<-as.numeric(lapply(DF$unshrunk.logFC,formatC,digits=2,format="e"))
+        DF$PValue<-as.numeric(lapply(DF$PValue,formatC,digits=2,format="e"))
+        as.data.frame(DF)
+}
+```
+
+Analysis 1 - ARC v AVPV in Males(intact); cell-type specific 
+
+
+```{r}
+library(tweeDEseq)
+counts.a1<-assay(anova1)
+#subset columns 3,4,7,8,
+counts.a1<-counts.a1[,c(3,4,7,8)]
+counts.a1<-filterCounts(counts.a1)
+colnames(counts.a1)<-c("AVPV.1","AVPV.2","ARC.1","ARC.2")
+counts.tmm<-normalizeCounts(counts.a1,method="TMM")
+counts.tmm.b<-as.data.frame(counts.tmm)
+ggplot(stack(counts.tmm.b),aes(x=ind,y=values))+
+        geom_boxplot()+
+        coord_cartesian(ylim=c(0,1000))+
+        theme(axis.text.x = element_text(angle=90,vjust=0.5, size=16),
+              plot.title=element_text(face="bold.italic", size=14,hjust=0.5))+
+        ggtitle("Count Distribution with\n TMM Normalization\n in Males between AVPV and ARC")+
+        xlab("Samples")+
+        ylab("Counts")
+three<-as.numeric(counts.a1[,1])
+```
+
+
+```{r}
+a1.p<-a1[a1$type %in% c("p"),]
+d1<-DGEList(counts=counts.a1,group=as.factor(a1.p$region),genes=rownames(counts.a1))
+d1$samples$group <- relevel(d1$samples$group, ref="arc")
+################################
+#Add annotations
+#get entrez ids that are mapped to ensembl id
+entrez_id<-org.Mm.egENSEMBL2EG
+mapped_entrez<-mappedkeys(entrez_id)
+ensemblentrez_list<-as.list(entrez_id[mapped_entrez])
+m<-match(d1$genes$genes,names(ensemblentrez_list))
+d1$genes$ENTREZID<-ensemblentrez_list[m]
+
+#get symbol that are mapped to enterz gene id 
+sym<-org.Mm.egSYMBOL
+mapped_symbol<-mappedkeys(sym)
+entrezsymbol_list<-as.list(sym[mapped_symbol])
+m2<-match(d1$genes$ENTREZID,names(entrezsymbol_list))
+d1$genes$SYMBOL<-entrezsymbol_list[m2]
+##########################################
+region<-factor(a1.p$region)
+design<-model.matrix(~0+region)
+rownames(design)<-colnames(d1)
+d1<-calcNormFactors(d1,method="TMM")
+d1<-estimateDisp(d1,design,robust=TRUE) #no effect on downstream analysis but identifies genes that are outliers for mean disperion trend
+fit<-glmFit(d1,design)
+lrt<-glmLRT(fit,contrast=c(-1,1))
+#or p to i comparison can be made in this manner:
+reg<-makeContrasts(regionarc-regionavpv,levels=design)
+#lrt<-glmLRT(fit,contrast=pvsi)
+top<-topTags(lrt,n=Inf)
+#glmTreat to focus on biologically meaningful genes 
+treat<-glmTreat(fit,con=reg,lfc=log2(1.1))
+
+#topTags(treat,n=Inf,sort.by="logFC") and indexing below are working off the same list of genes with respective logFC values.
+list<-decideTestsDGE(treat)
+summary(decideTestsDGE(treat))
+#up_indx<-which(list[,1] ==1)#extract significant with positive fold change
+#up_tt<-treat$table[up_indx,]
+#up_genes<-treat$genes[up_indx,]
+
+#up and down DE genes
+indx<-which(list[,1] %in% c(1,-1))
+genes<-treat$genes[indx,]
+fc<-treat$table[indx,]
+
+sym<-genes$SYMBOL
+sym[sapply(sym, is.null)] <- NA
+symbol.unlist<-unlist(sym)
+sub<-cbind(fc,symbol.unlist)
+
+sort<-sub[order(sub$logFC),]
+gene.list<-sort$symbol.unlist
+
+#explore dispersion
+plotBCV(d1)
+#explore replicates
+plotMDS(d1)
+#explore replicates with correlation
+cor(counts.a1, method="spearman")
+cor(counts.a1,method="pearson")
+
+#prep for GO, feed only genes lists with up-regulated gene per brain region
+indx_avpv<-which(list[,1] %in% c(-1))
+indx_arc<-which(list[,1] %in% c(1))
+
+genes_avpv<-treat$genes[indx_avpv,]
+genes_arc<-treat$genes[indx_arc,]
+
+fc_avpv<-treat$genes[indx_avpv,]
+fc_arc<-treat$genes[indx_arc,]
+vec_avpv<-as.vector(fc_avpv$ENTREZID)
+vec_arc<-as.vector(fc_arc$ENTREZID)
+
+#smear PLOT
+#match treat$table to indx to extract Ensembl names
+ens<-rownames(treat$table[indx_avpv,])
+#smear plot only colors values based on top tags
+top<-topTags(treat,n=Inf)
+m<-match(top$table$genes,ens)
+top_ids<-na.omit(top$table[m,1])
+
+plotSmear(treat,de.tags=ens,pch=20,cex=0.6,main="DE in Kiss1 Neurons of Male AVPV \n Compared to Male ARC")
+abline(h=c(-1,0,1),col=c("dodgerblue","yellow","dodgerblue"),lty=2)
+```
+
+```{r}
+sort.f<-format.cust(sort)
+```
+GO Annotations
+```{r}
+go_avpv<-goana(list(vec_avpv),species="Mm")
+ont_avpv<-topGO(go_avpv,n=50)
+go_arc<-goana(list(vec_arc),species="Mm")
+ont_avpv<-topGO(go_arc,n=50)
+```
+BIOMART
+```{r}
+genes.bm<-fc_arc$genes
+library(biomaRt)
+mart<-useMart(biomart="ensembl",dataset= "mmusculus_gene_ensembl")
+results<-getBM(attributes=c("ensembl_gene_id","external_gene_name","go_id","name_1006","definition_1006"),filters="ensembl_gene_id",values=genes.bm, mart=mart)
+```
+
+Export 
+```{r}
+cat(capture.output(sort.f), file = 'avpv_arc_m.txt', sep = '\n')
+write.table(gene.list,row.names=FALSE,file='avpv_arc_m_genes.txt',sep='\n',quote=FALSE)
+cat(capture.output(ont_avpv),file='ontology_avpv_arc_m_inavpv.txt',sep='\n')
+cat(capture.output(ont_arc),file='ontology_avpv_arc_m_inarc.txt',sep='\n')
+options(max.print=nrow(results) * ncol(results))
+cat(capture.output(results),file='explanation_mart_arc.txt',sep='\n')
+```
+
+
+
+Analysis 2 - AVPV in Males and Females; celltype specific
+=================
+
+Female is the reference therefore positive FC is up-regulated expression in females and negative FC is up-regulation in males. The tagwise dispersion approach is strongly recommended in multi-factor experiment cases.
+
+```{r}
+library(tweeDEseq)
+counts.a2<-assay(anova2)
+#subset columns 3,4,7,8,
+counts.a2<-counts.a2[,c(3,4,7,8)]
+counts.a2<-filterCounts(counts.a2)
+colnames(counts.a2)<-c("F.1","F.2","M.1","M.2")
+counts.tmm<-normalizeCounts(counts.a2,method="TMM")
+counts.tmm.b<-as.data.frame(counts.tmm)
+ggplot(stack(counts.tmm.b),aes(x=ind,y=values))+
+        geom_boxplot()+
+        coord_cartesian(ylim=c(0,1000))+
+        theme(axis.text.x = element_text(angle=90,vjust=0.5, size=16),
+              plot.title=element_text(face="bold.italic", size=14,hjust=0.5))+
+        ggtitle("Count Distribution with\n TMM Normalization\n by Gender in AVPV")+
+        xlab("Samples")+
+        ylab("Counts")
+```
+
+```{r}
+a2.p<-a2[a2$type %in% c("p"),]
+d2<-DGEList(counts=counts.a2,group=as.factor(a2.p$gender),genes=rownames(counts.a2))
+d2$samples$group <- relevel(d2$samples$group, ref="female")
+################################
+#Add annotations
+#get entrez ids that are mapped to ensembl id
+entrez_id<-org.Mm.egENSEMBL2EG
+mapped_entrez<-mappedkeys(entrez_id)
+ensemblentrez_list<-as.list(entrez_id[mapped_entrez])
+m<-match(d2$genes$genes,names(ensemblentrez_list))
+d2$genes$ENTREZID<-ensemblentrez_list[m]
+
+#get symbol that are mapped to enterz gene id 
+sym<-org.Mm.egSYMBOL
+mapped_symbol<-mappedkeys(sym)
+entrezsymbol_list<-as.list(sym[mapped_symbol])
+m2<-match(d2$genes$ENTREZID,names(entrezsymbol_list))
+d2$genes$SYMBOL<-entrezsymbol_list[m2]
+##########################################
+gender<-factor(a2.p$gender)
+design<-model.matrix(~0+gender)
+rownames(design)<-colnames(d2)
+d2<-calcNormFactors(d2,method="TMM")
+d2<-estimateDisp(d2,design,robust=TRUE) #no effect on downstream analysis but identifies genes that are outliers for mean disperion trend
+fit<-glmFit(d2,design)
+lrt<-glmLRT(fit,contrast=c(-1,1))
+#or p to i comparison can be made in this manner:
+reg<-makeContrasts(genderfemale-gendermale,levels=design)
+#lrt<-glmLRT(fit,contrast=pvsi)
+top<-topTags(lrt,n=Inf)
+#glmTreat to focus on biologically meaningful genes 
+treat<-glmTreat(fit,con=reg,lfc=log2(1.1))
+
+#topTags(treat,n=Inf,sort.by="logFC") and indexing below are working off the same list of genes with respective logFC values.
+list<-decideTestsDGE(treat)
+summary(decideTestsDGE(treat))
+#up_indx<-which(list[,1] ==1)#extract significant with positive fold change
+#up_tt<-treat$table[up_indx,]
+#up_genes<-treat$genes[up_indx,]
+
+#up and down DE genes
+indx<-which(list[,1] %in% c(1,-1))
+genes<-treat$genes[indx,]
+fc<-treat$table[indx,]
+
+sym<-genes$SYMBOL
+sym[sapply(sym, is.null)] <- NA
+symbol.unlist<-unlist(sym)
+sub<-cbind(fc,symbol.unlist)
+
+sort<-sub[order(sub$logFC),]
+gene.list<-as.data.frame(sort$symbol.unlist)
+
+#explore dispersion
+plotBCV(d2)
+#explore replicates
+plotMDS(d2)
+#explore replicates with correlation
+cor(counts.a2, method="spearman")
+cor(counts.a2,method="pearson")
+
+
+#prep for GO, feed only genes lists with up-regulated gene per brain region
+indx_fem<-which(list[,1] %in% c(1))
+indx_male<-which(list[,1] %in% c(-1))
+
+genes_fem<-treat$genes[indx_fem,]
+genes_male<-treat$genes[indx_male,]
+
+fc_fem<-treat$genes[indx_fem,]
+fc_male<-treat$genes[indx_male,]
+vec_fem<-as.vector(fc_fem$ENTREZID)
+vec_male<-as.vector(fc_male$ENTREZID)
+
+#smear PLOT
+#match treat$table to indx to extract Ensembl names
+ens<-rownames(treat$table[indx_male,])
+#smear plot only colors values based on top tags
+top<-topTags(treat,n=Inf)
+m<-match(top$table$genes,ens)
+top_ids<-na.omit(top$table[m,1])
+
+plotSmear(treat,de.tags=ens,pch=20,cex=0.6,main="DE in Kiss1 Neurons of Male AVPV \n Compared to Females")
+abline(h=c(-1,0,1),col=c("dodgerblue","yellow","dodgerblue"),lty=2)
+```
+
+```{r}
+sort.f<-format.cust(sort)
+```
+
+GO Annotations - with linear model  
+```{r}
+go<-goana(treat,species="Mm",geneid=treat$genes$ENTREZID) #this subsetting didnt work with foldchange
+ont<-topGO(go,n=50)
+#all<-topGO(go,n=Inf)
+#go_up<-topGO(go,sort="up")
+#cell_spec<-all[which(all$Up>all$Down),]
+```
+GO Annotations - with vectors 
+```{r}
+go_fem<-goana(list(vec_fem),species="Mm")
+ont_fem<-topGO(go_fem,n=50)
+go_male<-goana(list(vec_male),species="Mm")
+ont_male<-topGO(go_male,n=50)
+```
+BIOMART
+```{r}
+genes.bm<-fc_male$genes
+library(biomaRt)
+mart<-useMart(biomart="ensembl",dataset= "mmusculus_gene_ensembl")
+results<-getBM(attributes=c("ensembl_gene_id","external_gene_name","go_id","name_1006","definition_1006"),filters="ensembl_gene_id",values=genes.bm, mart=mart)
+```
+Export 
+```{r}
+max.print <- getOption('max.print')
+options(max.print=nrow(sort.f) * ncol(sort.f))
+cat(capture.output(sort.f), file = 'avpv_f_m.txt', sep = '\n')
+write.table(gene.list,row.names=FALSE,file='avpv_f_m_genes.txt',sep='\n',quote=FALSE)
+cat(capture.output(ont),file='ontology_f_m.txt',sep='\n')
+cat(capture.output(ont_fem),file='ontology_f_m_infem.txt',sep='\n')
+cat(capture.output(ont_male),file='ontology_f_m_inmale.txt',sep='\n')
+options(max.print=nrow(results) * ncol(results))
+cat(capture.output(results),file='explanation_mart_male.txt',sep='\n')
+```
+
+
+GO Annotations  
+==============
+```{r}
+go<-goana(sort,species="Mm",geneid=treat$genes$ENTREZID)
+topGO(go,n=50)
+all<-topGO(go,n=Inf)
+test_up<-topGO(go,sort="up")
+
+cell_spec<-all[which(all$Up>all$Down),]
+```
+
+RNA Seq Power 
+==============
+biocLite("RNASeqPower")
+statistical power as it varies with sequencing depth and number of replicates and fold change. 
+```{r}
+median<-apply(counts.f,2,median)
+median.norm<-apply(counts.tmm,2,median)
+library(RNASeqPower)
+#Table represents statistical power for a gene with 56 aligned reads, the median coverage for one  sample with 38 million aligned reads, CV from this value 
+predict.low<-rnapower(depth=c(39,50,100),n=c(2,3,4),cv=0.448,alpha=c(0.05),effect=c(1,1.5,2,10))
+round(predict.low,1)
+predict.high<-rnapower(depth=c(39,50,100),n=c(2,3,4),cv=1,cv2=1.2, alpha=c(0.05),effect=c(1,1.5,2))
+```
+
